@@ -36,7 +36,7 @@
   /** The host's name while this user takes part in a Jukebox as a guest, null otherwise. */
   let homeJamHost = null;
   let queueMenuItem;
-  /** Who added each queued track (by its queue uid), shown in WorkAdventure; the host's own additions are unnamed. */
+  /** Who added each queued track (by its queue uid): name and WorkAdventure uuid; the host's own additions are unnamed. */
   const addedBy = new Map();
   let sentQueue = "";
   /** Context name by URI: a playlist name may need a request, made once. */
@@ -153,7 +153,8 @@
         title: track.metadata?.title ?? "",
         artist: track.metadata?.artist_name ?? "",
         artworkUrl: artworkUrl(track),
-        addedBy: addedBy.get(track.uid) ?? "",
+        addedBy: addedBy.get(track.uid)?.name ?? "",
+        addedByUuid: addedBy.get(track.uid)?.uuid ?? "",
       }));
   }
 
@@ -167,16 +168,17 @@
   }
 
   /** As the Jukebox's host: a participant's tracks go to the queue, remembered as theirs. */
-  async function enqueue({ uris, from }) {
+  async function enqueue({ uris, from, fromUuid }) {
     const tracks = queueableTracks(uris);
     if (tracks.length === 0) return;
     const who = typeof from === "string" && from ? from.slice(0, 100) : "Quelqu'un";
+    const whoUuid = typeof fromUuid === "string" ? fromUuid.slice(0, 256) : "";
     const known = new Set(readQueue().map((track) => track.uid));
     try {
       await Spicetify.addToQueue(tracks.map((uri) => ({ uri })));
       await wait(QUEUE_SETTLE_MS);
       for (const track of readQueue()) {
-        if (!known.has(track.uid) && tracks.includes(track.uri)) addedBy.set(track.uid, who);
+        if (!known.has(track.uid) && tracks.includes(track.uri)) addedBy.set(track.uid, { name: who, uuid: whoUuid });
       }
       const what = tracks.length > 1 ? `${tracks.length} morceaux` : "un morceau";
       Spicetify.showNotification(`${who} a ajouté ${what} au Jukebox`, false, 4000);
@@ -198,6 +200,41 @@
       console.error("[workadventure] could not remove from the queue", error);
     }
     sendQueue(true);
+  }
+
+  const isQueueEntry = (entry) => TRACK_URI.test(entry?.uri ?? "") && typeof entry?.uid === "string" && entry.uid !== "";
+
+  /** As the Jukebox's host: moves a track before or after another one of the queue. */
+  async function move({ uri, uid, before, after }) {
+    const target = isQueueEntry(before) ? { before } : isQueueEntry(after) ? { after } : undefined;
+    if (!isQueueEntry({ uri, uid }) || !target) return;
+    // Who added it survives the move: Spotify may give the entry a new uid.
+    const author = addedBy.get(uid);
+    const known = new Set(readQueue().map((track) => track.uid));
+    try {
+      const entry = { uri, uid };
+      const position = before ? { before: { uri: before.uri, uid: before.uid } } : { after: { uri: after.uri, uid: after.uid } };
+      await Spicetify.Platform.PlayerAPI.reorderQueue([entry], position);
+      await wait(QUEUE_SETTLE_MS);
+      if (author) {
+        const moved = readQueue().find((track) => track.uri === uri && (track.uid === uid || !known.has(track.uid)));
+        if (moved) addedBy.set(moved.uid, author);
+      }
+    } catch (error) {
+      console.error("[workadventure] could not move a queued track", error);
+    }
+    sendQueue(true);
+  }
+
+  /** Saves a track to this user's Liked Songs, from WorkAdventure (heart on a card or a Jukebox track). */
+  async function like({ uri }) {
+    if (!TRACK_URI.test(uri ?? "")) return;
+    try {
+      await Spicetify.Platform.LibraryAPI.add({ uris: [uri] });
+      Spicetify.showNotification("Ajouté aux titres likés", false, 3000);
+    } catch (error) {
+      console.error("[workadventure] could not like a track", error);
+    }
   }
 
   function setHomeJam(hostName) {
@@ -235,6 +272,8 @@
     else if (message?.type === "home-jam") setHomeJam(message.hostName);
     else if (message?.type === "enqueue") void enqueue(message);
     else if (message?.type === "dequeue") void dequeue(message);
+    else if (message?.type === "move") void move(message);
+    else if (message?.type === "like") void like(message);
     // "unfollow": the track keeps playing, as after any other choice of the user.
   }
 

@@ -191,6 +191,8 @@
     if (!TRACK_URI.test(uri ?? "") || typeof uid !== "string" || !uid) return;
     try {
       await Spicetify.removeFromQueue([{ uri, uid }]);
+      // The queue still lists it for a moment: forgetting who added it now would show it unattributed.
+      await wait(QUEUE_SETTLE_MS);
       addedBy.delete(uid);
     } catch (error) {
       console.error("[workadventure] could not remove from the queue", error);

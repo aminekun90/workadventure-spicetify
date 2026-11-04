@@ -22,14 +22,23 @@
   /** Only a playlist or an album is shared: others can open it (not an artist, a radio or the liked songs). */
   const CONTEXT_URI = /^spotify:(playlist|album):[A-Za-z0-9]+$/;
 
-  /** Most tracks one request adds to the home Jam: the desktop app refuses more. */
+  /** Most tracks one request adds to the Jukebox: the desktop app refuses more. */
   const MAX_QUEUED_TRACKS = 5;
+  /** The queue is read this often and sent to the desktop app when it changed (Spotify has no queue event). */
+  const QUEUE_POLL_MS = 2000;
+  /** Tracks of the queue shown in WorkAdventure. */
+  const MAX_SHOWN_QUEUE = 30;
+  /** addToQueue resolves before the queue lists the new tracks. */
+  const QUEUE_SETTLE_MS = 600;
 
   let socket;
   let connectedOnce = false;
-  /** The host's name while this user takes part in a home Jam as a guest, null otherwise. */
+  /** The host's name while this user takes part in a Jukebox as a guest, null otherwise. */
   let homeJamHost = null;
   let queueMenuItem;
+  /** Who added each queued track (by its queue uid), shown in WorkAdventure; the host's own additions are unnamed. */
+  const addedBy = new Map();
+  let sentQueue = "";
   /** Context name by URI: a playlist name may need a request, made once. */
   const contextNames = new Map();
 
@@ -131,38 +140,82 @@
   const queueableTracks = (uris) =>
     Array.isArray(uris) ? uris.filter((uri) => TRACK_URI.test(uri)).slice(0, MAX_QUEUED_TRACKS) : [];
 
-  /** As the home Jam's host: a participant's tracks go to the queue, which the host can edit in Spotify as usual. */
+  /** The tracks added to the queue (not those of the playing playlist), as WorkAdventure shows them. */
+  function readQueue() {
+    return (Spicetify.Queue?.nextTracks ?? [])
+      .filter((entry) => entry.provider === "queue")
+      .map((entry) => entry.contextTrack ?? {})
+      .filter((track) => TRACK_URI.test(track.uri ?? "") && typeof track.uid === "string" && track.uid)
+      .slice(0, MAX_SHOWN_QUEUE)
+      .map((track) => ({
+        uri: track.uri,
+        uid: track.uid,
+        title: track.metadata?.title ?? "",
+        artist: track.metadata?.artist_name ?? "",
+        artworkUrl: artworkUrl(track),
+        addedBy: addedBy.get(track.uid) ?? "",
+      }));
+  }
+
+  /** Sends the queue when it changed, or always when forced (the desktop app just connected). */
+  function sendQueue(force = false) {
+    const tracks = readQueue();
+    const serialized = JSON.stringify(tracks);
+    if (!force && serialized === sentQueue) return;
+    sentQueue = serialized;
+    send({ type: "queue", tracks });
+  }
+
+  /** As the Jukebox's host: a participant's tracks go to the queue, remembered as theirs. */
   async function enqueue({ uris, from }) {
     const tracks = queueableTracks(uris);
     if (tracks.length === 0) return;
+    const who = typeof from === "string" && from ? from.slice(0, 100) : "Quelqu'un";
+    const known = new Set(readQueue().map((track) => track.uid));
     try {
       await Spicetify.addToQueue(tracks.map((uri) => ({ uri })));
-      const who = typeof from === "string" && from ? from : "Quelqu'un";
+      await wait(QUEUE_SETTLE_MS);
+      for (const track of readQueue()) {
+        if (!known.has(track.uid) && tracks.includes(track.uri)) addedBy.set(track.uid, who);
+      }
       const what = tracks.length > 1 ? `${tracks.length} morceaux` : "un morceau";
-      Spicetify.showNotification(`${who} a ajouté ${what} à la file`, false, 4000);
+      Spicetify.showNotification(`${who} a ajouté ${what} au Jukebox`, false, 4000);
     } catch (error) {
       console.error("[workadventure] could not add to the queue", error);
     }
+    sendQueue(true);
+  }
+
+  /** As the Jukebox's host: a track removed from WorkAdventure (by the host or a participant allowed to). */
+  async function dequeue({ uri, uid }) {
+    if (!TRACK_URI.test(uri ?? "") || typeof uid !== "string" || !uid) return;
+    try {
+      await Spicetify.removeFromQueue([{ uri, uid }]);
+      addedBy.delete(uid);
+    } catch (error) {
+      console.error("[workadventure] could not remove from the queue", error);
+    }
+    sendQueue(true);
   }
 
   function setHomeJam(hostName) {
     homeJamHost = typeof hostName === "string" ? hostName : null;
-    if (queueMenuItem && homeJamHost !== null) queueMenuItem.name = `Ajouter à la Jam maison de ${homeJamHost || "l'hôte"}`;
+    if (queueMenuItem && homeJamHost !== null) queueMenuItem.name = `Ajouter au Jukebox de ${homeJamHost || "l'hôte"}`;
   }
 
-  /** Right click on tracks, only while taking part in a home Jam: they are sent to the host's queue. */
+  /** Right click on tracks, only while taking part in a Jukebox: they are sent to the host's queue. */
   function registerQueueMenu() {
     if (!Spicetify.ContextMenu?.Item) {
       setTimeout(registerQueueMenu, 300);
       return;
     }
     queueMenuItem = new Spicetify.ContextMenu.Item(
-      "Ajouter à la Jam maison",
+      "Ajouter au Jukebox",
       (uris) => {
         const tracks = queueableTracks(uris);
         if (tracks.length === 0 || homeJamHost === null) return;
         send({ type: "queue-request", uris: tracks });
-        Spicetify.showNotification(`Envoyé à la Jam maison de ${homeJamHost || "l'hôte"}`, false, 3000);
+        Spicetify.showNotification(`Envoyé au Jukebox de ${homeJamHost || "l'hôte"}`, false, 3000);
       },
       (uris) => homeJamHost !== null && socket?.readyState === WebSocket.OPEN && queueableTracks(uris).length === uris.length,
     );
@@ -179,6 +232,7 @@
     if (message?.type === "follow") void follow(message);
     else if (message?.type === "home-jam") setHomeJam(message.hostName);
     else if (message?.type === "enqueue") void enqueue(message);
+    else if (message?.type === "dequeue") void dequeue(message);
     // "unfollow": the track keeps playing, as after any other choice of the user.
   }
 
@@ -187,11 +241,12 @@
     socket.addEventListener("open", () => {
       send({ type: "hello", version: PROTOCOL_VERSION });
       sendState();
+      sendQueue(true);
       if (!connectedOnce) Spicetify.showNotification("WorkAdventure connecté", false, 4000);
       connectedOnce = true;
     });
     socket.addEventListener("message", onMessage);
-    // The desktop app is not always running: try again quietly. Without it, there is no home Jam either.
+    // The desktop app is not always running: try again quietly. Without it, there is no Jukebox either.
     socket.addEventListener("close", () => {
       setHomeJam(null);
       setTimeout(connect, RECONNECT_MS);
@@ -201,6 +256,7 @@
   Spicetify.Player.addEventListener("songchange", sendState);
   Spicetify.Player.addEventListener("onplaypause", sendState);
   setInterval(sendState, STATE_INTERVAL_MS);
+  setInterval(() => sendQueue(), QUEUE_POLL_MS);
   registerQueueMenu();
   connect();
 })();

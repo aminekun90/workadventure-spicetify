@@ -46,10 +46,10 @@ Dans WorkAdventure, cliquer sur un collègue qui écoute un morceau Spotify, pui
 carte « En écoute ». Le même bouton arrête. Quand le morceau vient d'une playlist ou d'un album, la carte l'affiche
 avec un lien pour l'ouvrir (extension 1.1.0 ou plus récente).
 
-**Jam maison** (extension 1.2.0 ou plus récente) : dans une zone d'écoute, « Lancer une Jam maison » ; les autres
-cliquent « Rejoindre la Jam maison » et leur Spotify suit le vôtre, morceau par morceau. Pour ajouter un morceau à la
-file de l'hôte : clic droit dessus dans Spotify, **« Ajouter à la Jam maison de … »**. L'hôte le voit arriver dans sa
-file et peut le retirer comme d'habitude dans Spotify. Réservé au client desktop avec Spicetify et cette extension,
+**Jukebox** (extension 1.3.0 ou plus récente ; 1.2.0 sans la file) : dans une zone d'écoute, « Lancer un Jukebox » ; les autres
+cliquent « Rejoindre le Jukebox » et leur Spotify suit le vôtre, morceau par morceau. Pour ajouter un morceau à la
+file de l'hôte : clic droit dessus dans Spotify, **« Ajouter au Jukebox de … »**. L'hôte le voit arriver dans sa
+file. Dans WorkAdventure, le bouton « File » du salon montre les morceaux à venir (qui les a ajoutés), permet d'en ajouter en collant un lien et d'en retirer ; l'hôte peut renommer son salon et passer en mode DJ (lui seul retire). Réservé au client desktop avec Spicetify et cette extension,
 côté hôte comme côté invités.
 
 ## Désinstaller
@@ -64,7 +64,7 @@ spicetify apply
 L'extension ne parle qu'au client desktop, sur cet ordinateur (`ws://127.0.0.1:47613`), qui n'accepte que l'app
 Spotify. Elle lui envoie le morceau joué, sa position et la playlist ou l'album d'où il vient (nom compris, jamais un
 artiste, une radio ou les titres likés) ; le client les partage dans WorkAdventure. Pour suivre un
-collègue, le client lui demande de jouer son morceau (`Spicetify.Player.playUri`) à sa position (`seek`). Dans une
-Jam maison, les morceaux ajoutés passent par WorkAdventure jusqu'au client de l'hôte, qui les met dans sa file
+collègue, le client lui demande de jouer son morceau (`Spicetify.Player.playUri`) à sa position (`seek`). Dans un
+Jukebox, les morceaux ajoutés passent par WorkAdventure jusqu'au client de l'hôte, qui les met dans sa file
 (`Spicetify.addToQueue`, 5 morceaux au plus par ajout). Aucune
 connexion directe entre ordinateurs, aucune mesure d'usage.

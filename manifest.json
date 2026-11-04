@@ -1,0 +1,8 @@
+{
+  "name": "WorkAdventure",
+  "description": "Écouter en même temps qu'un collègue dans WorkAdventure, sans Premium (avec le client workadventure-desktop).",
+  "main": "workadventure.js",
+  "readme": "README.md",
+  "authors": [{ "name": "aminekun90", "url": "https://github.com/aminekun90" }],
+  "tags": ["social", "sync", "workadventure"]
+}

@@ -36,8 +36,9 @@ Au démarrage de Spotify, la notification « WorkAdventure connecté » confirme
 
 ## Mettre à jour
 
-Relancer la première commande d'installation (elle remplace le fichier), puis `spicetify apply`. Le client desktop
-n'installe l'extension qu'une fois : il ne la met pas à jour.
+Le client desktop (0.1.0-beta.17 ou plus récent) s'en charge à son démarrage : il installe la version qui correspond à
+la sienne et relance Spotify s'il est ouvert. À la main : relancer la première commande d'installation (elle remplace
+le fichier), puis `spicetify apply`.
 
 ## Utiliser
 

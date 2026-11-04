@@ -22,8 +22,14 @@
   /** Only a playlist or an album is shared: others can open it (not an artist, a radio or the liked songs). */
   const CONTEXT_URI = /^spotify:(playlist|album):[A-Za-z0-9]+$/;
 
+  /** Most tracks one request adds to the home Jam: the desktop app refuses more. */
+  const MAX_QUEUED_TRACKS = 5;
+
   let socket;
   let connectedOnce = false;
+  /** The host's name while this user takes part in a home Jam as a guest, null otherwise. */
+  let homeJamHost = null;
+  let queueMenuItem;
   /** Context name by URI: a playlist name may need a request, made once. */
   const contextNames = new Map();
 
@@ -122,6 +128,47 @@
     }
   }
 
+  const queueableTracks = (uris) =>
+    Array.isArray(uris) ? uris.filter((uri) => TRACK_URI.test(uri)).slice(0, MAX_QUEUED_TRACKS) : [];
+
+  /** As the home Jam's host: a participant's tracks go to the queue, which the host can edit in Spotify as usual. */
+  async function enqueue({ uris, from }) {
+    const tracks = queueableTracks(uris);
+    if (tracks.length === 0) return;
+    try {
+      await Spicetify.addToQueue(tracks.map((uri) => ({ uri })));
+      const who = typeof from === "string" && from ? from : "Quelqu'un";
+      const what = tracks.length > 1 ? `${tracks.length} morceaux` : "un morceau";
+      Spicetify.showNotification(`${who} a ajouté ${what} à la file`, false, 4000);
+    } catch (error) {
+      console.error("[workadventure] could not add to the queue", error);
+    }
+  }
+
+  function setHomeJam(hostName) {
+    homeJamHost = typeof hostName === "string" ? hostName : null;
+    if (queueMenuItem && homeJamHost !== null) queueMenuItem.name = `Ajouter à la Jam maison de ${homeJamHost || "l'hôte"}`;
+  }
+
+  /** Right click on tracks, only while taking part in a home Jam: they are sent to the host's queue. */
+  function registerQueueMenu() {
+    if (!Spicetify.ContextMenu?.Item) {
+      setTimeout(registerQueueMenu, 300);
+      return;
+    }
+    queueMenuItem = new Spicetify.ContextMenu.Item(
+      "Ajouter à la Jam maison",
+      (uris) => {
+        const tracks = queueableTracks(uris);
+        if (tracks.length === 0 || homeJamHost === null) return;
+        send({ type: "queue-request", uris: tracks });
+        Spicetify.showNotification(`Envoyé à la Jam maison de ${homeJamHost || "l'hôte"}`, false, 3000);
+      },
+      (uris) => homeJamHost !== null && socket?.readyState === WebSocket.OPEN && queueableTracks(uris).length === uris.length,
+    );
+    queueMenuItem.register();
+  }
+
   function onMessage(event) {
     let message;
     try {
@@ -130,6 +177,8 @@
       return;
     }
     if (message?.type === "follow") void follow(message);
+    else if (message?.type === "home-jam") setHomeJam(message.hostName);
+    else if (message?.type === "enqueue") void enqueue(message);
     // "unfollow": the track keeps playing, as after any other choice of the user.
   }
 
@@ -142,12 +191,16 @@
       connectedOnce = true;
     });
     socket.addEventListener("message", onMessage);
-    // The desktop app is not always running: try again quietly.
-    socket.addEventListener("close", () => setTimeout(connect, RECONNECT_MS));
+    // The desktop app is not always running: try again quietly. Without it, there is no home Jam either.
+    socket.addEventListener("close", () => {
+      setHomeJam(null);
+      setTimeout(connect, RECONNECT_MS);
+    });
   }
 
   Spicetify.Player.addEventListener("songchange", sendState);
   Spicetify.Player.addEventListener("onplaypause", sendState);
   setInterval(sendState, STATE_INTERVAL_MS);
+  registerQueueMenu();
   connect();
 })();

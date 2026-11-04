@@ -28,6 +28,8 @@
   const QUEUE_POLL_MS = 2000;
   /** Tracks of the queue shown in WorkAdventure. */
   const MAX_SHOWN_QUEUE = 30;
+  /** Tracks still to come from the playing playlist or album, shown after the queue. */
+  const MAX_SHOWN_UPCOMING = 20;
   /** addToQueue resolves before the queue lists the new tracks. */
   const QUEUE_SETTLE_MS = 600;
 
@@ -158,13 +160,34 @@
       }));
   }
 
+  /** What plays after the queue: the rest of the playlist or album, then Spotify's autoplay. Read-only. */
+  function readUpcoming() {
+    return (Spicetify.Queue?.nextTracks ?? [])
+      .filter((entry) => entry.provider === "context" || entry.provider === "autoplay")
+      .map((entry) => entry.contextTrack ?? {})
+      .filter((track) => TRACK_URI.test(track.uri ?? ""))
+      .slice(0, MAX_SHOWN_UPCOMING)
+      .map((track) => ({
+        uri: track.uri,
+        title: track.metadata?.title ?? "",
+        artist: track.metadata?.artist_name ?? "",
+        artworkUrl: artworkUrl(track),
+      }));
+  }
+
+  /** The name of the playing playlist or album, when it is one; empty otherwise. */
+  function playingContextName() {
+    const context = readContext(currentItem());
+    return context?.name ?? "";
+  }
+
   /** Sends the queue when it changed, or always when forced (the desktop app just connected). */
   function sendQueue(force = false) {
-    const tracks = readQueue();
-    const serialized = JSON.stringify(tracks);
+    const state = { tracks: readQueue(), upcoming: readUpcoming(), contextName: playingContextName() };
+    const serialized = JSON.stringify(state);
     if (!force && serialized === sentQueue) return;
     sentQueue = serialized;
-    send({ type: "queue", tracks });
+    send({ type: "queue", ...state });
   }
 
   /** As the Jukebox's host: a participant's tracks go to the queue, remembered as theirs. */

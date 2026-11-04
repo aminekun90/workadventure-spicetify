@@ -34,10 +34,16 @@ Invoke-WebRequest https://raw.githubusercontent.com/aminekun90/workadventure-spi
 
 Au démarrage de Spotify, la notification « WorkAdventure connecté » confirme le lien avec le client desktop.
 
+## Mettre à jour
+
+Relancer la première commande d'installation (elle remplace le fichier), puis `spicetify apply`. Le client desktop
+n'installe l'extension qu'une fois : il ne la met pas à jour.
+
 ## Utiliser
 
 Dans WorkAdventure, cliquer sur un collègue qui écoute un morceau Spotify, puis **« Écouter en même temps »** sur sa
-carte « En écoute ». Le même bouton arrête.
+carte « En écoute ». Le même bouton arrête. Quand le morceau vient d'une playlist ou d'un album, la carte l'affiche
+avec un lien pour l'ouvrir (extension 1.1.0 ou plus récente).
 
 ## Désinstaller
 
@@ -49,6 +55,7 @@ spicetify apply
 ## Fonctionnement
 
 L'extension ne parle qu'au client desktop, sur cet ordinateur (`ws://127.0.0.1:47613`), qui n'accepte que l'app
-Spotify. Elle lui envoie le morceau joué et sa position ; le client les partage dans WorkAdventure. Pour suivre un
+Spotify. Elle lui envoie le morceau joué, sa position et la playlist ou l'album d'où il vient (nom compris, jamais un
+artiste, une radio ou les titres likés) ; le client les partage dans WorkAdventure. Pour suivre un
 collègue, le client lui demande de jouer son morceau (`Spicetify.Player.playUri`) à sa position (`seek`). Aucune
 connexion directe entre ordinateurs, aucune mesure d'usage.

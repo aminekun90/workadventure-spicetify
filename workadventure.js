@@ -1,6 +1,6 @@
-// WorkAdventure for Spicetify: lets the WorkAdventure desktop app read what this Spotify plays (track and position)
-// and play along with another user ("Écouter en même temps"), Spotify Free included. It only talks to the desktop
-// app, on this computer (127.0.0.1); nothing else leaves Spotify.
+// WorkAdventure for Spicetify: lets the WorkAdventure desktop app read what this Spotify plays (track, position and
+// the playlist or album it plays from) and play along with another user ("Écouter en même temps"), Spotify Free
+// included. It only talks to the desktop app, on this computer (127.0.0.1); nothing else leaves Spotify.
 (function workadventure() {
   const Spicetify = window.Spicetify;
   if (!Spicetify?.Player?.playUri || !Spicetify.Player.addEventListener || !Spicetify.showNotification) {
@@ -19,9 +19,13 @@
   /** playUri resolves before the new track is ready to seek. */
   const SEEK_DELAY_MS = 500;
   const TRACK_URI = /^spotify:track:[A-Za-z0-9]+$/;
+  /** Only a playlist or an album is shared: others can open it (not an artist, a radio or the liked songs). */
+  const CONTEXT_URI = /^spotify:(playlist|album):[A-Za-z0-9]+$/;
 
   let socket;
   let connectedOnce = false;
+  /** Context name by URI: a playlist name may need a request, made once. */
+  const contextNames = new Map();
 
   function currentItem() {
     return Spicetify.Player.data?.item ?? Spicetify.Player.data?.track;
@@ -47,6 +51,43 @@
     };
   }
 
+  /** The name the player state gives, or the album of the playing track. */
+  function contextNameFromState(uri, item) {
+    const context = Spicetify.Player.data?.context;
+    const fromState = context?.uri === uri ? (context.metadata?.context_description ?? "") : "";
+    if (fromState) return fromState;
+    return item?.album?.uri === uri ? (item.album.name ?? "") : "";
+  }
+
+  async function fetchContextName(uri) {
+    if (!uri.startsWith("spotify:playlist:")) return "";
+    try {
+      const metadata = await Spicetify.Platform?.PlaylistAPI?.getMetadata?.(uri);
+      return typeof metadata?.name === "string" ? metadata.name : "";
+    } catch (error) {
+      console.warn("[workadventure] could not read the playlist name", error);
+      return "";
+    }
+  }
+
+  /** The playlist or album the track plays from, or null; a name still unknown is sent once it is read. */
+  function readContext(item) {
+    const uri = Spicetify.Player.data?.context?.uri ?? Spicetify.Player.data?.context_uri ?? "";
+    if (!CONTEXT_URI.test(uri)) return null;
+    if (!contextNames.has(uri)) {
+      const name = contextNameFromState(uri, item);
+      contextNames.set(uri, name);
+      if (!name) {
+        void fetchContextName(uri).then((fetched) => {
+          if (!fetched) return;
+          contextNames.set(uri, fetched);
+          sendState();
+        });
+      }
+    }
+    return { uri, name: contextNames.get(uri).slice(0, 200) };
+  }
+
   function send(message) {
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
   }
@@ -58,6 +99,7 @@
       track,
       positionMs: track ? Math.max(0, Math.round(Spicetify.Player.getProgress())) : 0,
       positionAt: Date.now(),
+      context: track ? readContext(currentItem()) : null,
     });
   }
 

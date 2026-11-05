@@ -160,15 +160,19 @@
       }));
   }
 
-  /** What plays after the queue: the rest of the playlist or album, then Spotify's autoplay. Read-only. */
+  /**
+   * What plays after the queue: the rest of the playlist or album, then Spotify's autoplay. Spotify moves and removes
+   * these too (for this playback only: the playlist itself is not changed), so they carry their queue uid.
+   */
   function readUpcoming() {
     return (Spicetify.Queue?.nextTracks ?? [])
       .filter((entry) => entry.provider === "context" || entry.provider === "autoplay")
       .map((entry) => entry.contextTrack ?? {})
-      .filter((track) => TRACK_URI.test(track.uri ?? ""))
+      .filter((track) => TRACK_URI.test(track.uri ?? "") && typeof track.uid === "string" && track.uid)
       .slice(0, MAX_SHOWN_UPCOMING)
       .map((track) => ({
         uri: track.uri,
+        uid: track.uid,
         title: track.metadata?.title ?? "",
         artist: track.metadata?.artist_name ?? "",
         artworkUrl: artworkUrl(track),

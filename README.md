@@ -48,7 +48,7 @@ avec un lien pour l'ouvrir (extension 1.1.0 ou plus récente).
 
 **Jukebox** (extension 1.3.0 ou plus récente ; 1.2.0 sans la file) : dans une zone d'écoute, « Lancer un Jukebox » ; les autres
 cliquent « Rejoindre le Jukebox » et leur Spotify suit le vôtre, morceau par morceau. Pour ajouter un morceau à la
-file de l'hôte : clic droit dessus dans Spotify, **« Ajouter au Jukebox de … »**. L'hôte le voit arriver dans sa
+file de l'hôte : clic droit dessus dans Spotify, **« Ajouter au Jukebox de … »** ; le « Ajouter à la file d'attente » habituel de Spotify y envoie aussi le morceau (extension 1.4.0 ou plus récente). L'hôte le voit arriver dans sa
 file. Dans WorkAdventure, le bouton « File » du salon montre les morceaux à venir (qui les a ajoutés), permet d'en ajouter en collant un lien et d'en retirer ; l'hôte peut renommer son salon et passer en mode DJ (lui seul retire). Réservé au client desktop avec Spicetify et cette extension,
 côté hôte comme côté invités.
 

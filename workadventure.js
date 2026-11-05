@@ -185,6 +185,23 @@
     return context?.name ?? "";
   }
 
+  /**
+   * As a Jukebox guest: what the user adds to their own queue with Spotify's own "Add to queue" goes to the host's
+   * queue instead (the host plays it for everyone, this Spotify follows), then leaves the local queue.
+   */
+  async function forwardLocalQueue() {
+    if (homeJamHost === null || socket?.readyState !== WebSocket.OPEN) return;
+    const added = readQueue().slice(0, MAX_QUEUED_TRACKS);
+    if (added.length === 0) return;
+    send({ type: "queue-request", uris: added.map((track) => track.uri) });
+    try {
+      await Spicetify.removeFromQueue(added.map((track) => ({ uri: track.uri, uid: track.uid })));
+    } catch (error) {
+      console.error("[workadventure] could not move the queue to the Jukebox", error);
+    }
+    Spicetify.showNotification(`Envoyé au Jukebox de ${homeJamHost || "l'hôte"}`, false, 3000);
+  }
+
   /** Sends the queue when it changed, or always when forced (the desktop app just connected). */
   function sendQueue(force = false) {
     const state = { tracks: readQueue(), upcoming: readUpcoming(), contextName: playingContextName() };
@@ -324,7 +341,10 @@
   Spicetify.Player.addEventListener("songchange", sendState);
   Spicetify.Player.addEventListener("onplaypause", sendState);
   setInterval(sendState, STATE_INTERVAL_MS);
-  setInterval(() => sendQueue(), QUEUE_POLL_MS);
+  setInterval(() => {
+    sendQueue();
+    void forwardLocalQueue();
+  }, QUEUE_POLL_MS);
   registerQueueMenu();
   connect();
 })();

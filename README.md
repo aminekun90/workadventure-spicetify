@@ -68,3 +68,10 @@ collègue, le client lui demande de jouer son morceau (`Spicetify.Player.playUri
 Jukebox, les morceaux ajoutés passent par WorkAdventure jusqu'au client de l'hôte, qui les met dans sa file
 (`Spicetify.addToQueue`, 5 morceaux au plus par ajout). Aucune
 connexion directe entre ordinateurs, aucune mesure d'usage.
+
+Les nouvelles playlists sont relues après un changement de morceau, puis une seconde fois 600 ms plus tard.
+Si leurs métadonnées ne sont pas encore disponibles, l’extension réessaie au lieu de mémoriser une absence
+jusqu’au redémarrage de Spotify. Les prochains titres sans identifiant de file restent affichés.
+Le client desktop peut demander cette relecture avec `refresh-queue`, notamment à l’ouverture du panneau File.
+
+Vérification de syntaxe et tests de régression : `pnpm check` (sans dépendance à installer).

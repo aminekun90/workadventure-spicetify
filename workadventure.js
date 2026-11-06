@@ -1,3 +1,4 @@
+// WorkAdventure Spicetify v1.4.2
 // WorkAdventure for Spicetify: lets the WorkAdventure desktop app read what this Spotify plays (track, position and
 // the playlist or album it plays from) and play along with another user ("Écouter en même temps"), Spotify Free
 // included. It only talks to the desktop app, on this computer (127.0.0.1); nothing else leaves Spotify.

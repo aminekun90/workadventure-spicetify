@@ -1,0 +1,7 @@
+{
+  "name": "workadventure-spicetify",
+  "private": true,
+  "scripts": {
+    "check": "node --check workadventure.js && node --test tests/queue.test.mjs"
+  }
+}

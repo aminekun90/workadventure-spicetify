@@ -41,8 +41,11 @@
   /** Who added each queued track (by its queue uid): name and WorkAdventure uuid; the host's own additions are unnamed. */
   const addedBy = new Map();
   let sentQueue = "";
-  /** Context name by URI: a playlist name may need a request, made once. */
+  /** Context names by URI; unavailable metadata is retried while the context remains active. */
   const contextNames = new Map();
+  const contextRequests = new Set();
+  const contextRetryAt = new Map();
+  const CONTEXT_RETRY_MS = 5000;
 
   function currentItem() {
     return Spicetify.Player.data?.item ?? Spicetify.Player.data?.track;
@@ -89,20 +92,22 @@
 
   /** The playlist or album the track plays from, or null; a name still unknown is sent once it is read. */
   function readContext(item) {
-    const uri = Spicetify.Player.data?.context?.uri ?? Spicetify.Player.data?.context_uri ?? "";
+    const uri = Spicetify.Player.data?.context?.uri || Spicetify.Player.data?.context_uri || "";
     if (!CONTEXT_URI.test(uri)) return null;
-    if (!contextNames.has(uri)) {
-      const name = contextNameFromState(uri, item);
-      contextNames.set(uri, name);
-      if (!name) {
-        void fetchContextName(uri).then((fetched) => {
-          if (!fetched) return;
-          contextNames.set(uri, fetched);
-          sendState();
-        });
-      }
+    const name = contextNameFromState(uri, item);
+    if (name) contextNames.set(uri, name);
+    if (!contextNames.has(uri) && !contextRequests.has(uri) && Date.now() >= (contextRetryAt.get(uri) ?? 0)) {
+      contextRequests.add(uri);
+      contextRetryAt.set(uri, Date.now() + CONTEXT_RETRY_MS);
+      void fetchContextName(uri).then((fetched) => {
+        // A new playlist may not have metadata yet: never cache that absence for the Spotify session.
+        if (!fetched) return;
+        contextNames.set(uri, fetched);
+        sendState();
+        sendQueue(true);
+      }).finally(() => contextRequests.delete(uri));
     }
-    return { uri, name: contextNames.get(uri).slice(0, 200) };
+    return { uri, name: (contextNames.get(uri) ?? "").slice(0, 200) };
   }
 
   function send(message) {
@@ -168,13 +173,14 @@
     return (Spicetify.Queue?.nextTracks ?? [])
       .filter((entry) => entry.provider === "context" || entry.provider === "autoplay")
       .map((entry) => entry.contextTrack ?? {})
-      .filter((track) => TRACK_URI.test(track.uri ?? "") && typeof track.uid === "string" && track.uid)
+      .filter((track) => TRACK_URI.test(track.uri ?? ""))
       .slice(0, MAX_SHOWN_UPCOMING)
       .map((track) => ({
         uri: track.uri,
-        uid: track.uid,
-        title: track.metadata?.title ?? "",
-        artist: track.metadata?.artist_name ?? "",
+        // Fresh playback contexts can expose tracks before Spotify assigns their queue uid.
+        ...(typeof track.uid === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(track.uid) ? { uid: track.uid } : {}),
+        title: (track.metadata?.title ?? "").slice(0, 200),
+        artist: (track.metadata?.artist_name ?? "").slice(0, 200),
         artworkUrl: artworkUrl(track),
       }));
   }
@@ -209,6 +215,16 @@
     if (!force && serialized === sentQueue) return;
     sentQueue = serialized;
     send({ type: "queue", ...state });
+  }
+
+  /** Songchange can fire before Spotify updates the context and queue: read them again once settled. */
+  function refreshPlayback() {
+    sendState();
+    sendQueue(true);
+    setTimeout(() => {
+      sendState();
+      sendQueue(true);
+    }, QUEUE_SETTLE_MS);
   }
 
   /** As the Jukebox's host: a participant's tracks go to the queue, remembered as theirs. */
@@ -318,6 +334,11 @@
     else if (message?.type === "dequeue") void dequeue(message);
     else if (message?.type === "move") void move(message);
     else if (message?.type === "like") void like(message);
+    else if (message?.type === "refresh-queue") {
+      const uri = Spicetify.Player.data?.context?.uri || Spicetify.Player.data?.context_uri;
+      contextRetryAt.delete(uri);
+      refreshPlayback();
+    }
     // "unfollow": the track keeps playing, as after any other choice of the user.
   }
 
@@ -338,7 +359,7 @@
     });
   }
 
-  Spicetify.Player.addEventListener("songchange", sendState);
+  Spicetify.Player.addEventListener("songchange", refreshPlayback);
   Spicetify.Player.addEventListener("onplaypause", sendState);
   setInterval(sendState, STATE_INTERVAL_MS);
   setInterval(() => {

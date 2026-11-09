@@ -12,7 +12,7 @@
   /** Must match SPICETIFY_BRIDGE_PORT in workadventure-desktop. */
   const DESKTOP_URL = "ws://127.0.0.1:47613";
   const PROTOCOL_VERSION = 1;
-  const RECONNECT_MS = 5000;
+  const RECONNECT_MS = 1000;
   /** Positions move every second: a periodic state lets the desktop app notice a seek. */
   const STATE_INTERVAL_MS = 10_000;
   /** Closer than that to the followed position: no seek, it would be heard. */
@@ -48,6 +48,61 @@
   const contextRetryAt = new Map();
   const CONTEXT_RETRY_MS = 5000;
 
+  // Spotify's own analysis, aligned with this player's position; never a made-up tempo.
+  let musicWatching = false;
+  let playbackWatching = false;
+  let analysisUri;
+  let analysis;
+  let analysisGeneration = 0;
+  const MUSIC_INTERVAL_MS = 50;
+
+  async function loadAnalysis(uri) {
+    const generation = ++analysisGeneration;
+    analysisUri = uri;
+    analysis = undefined;
+    try {
+      const data = await Spicetify.getAudioData?.(uri);
+      if (generation !== analysisGeneration || !musicWatching) return;
+      if (Array.isArray(data?.beats) && Array.isArray(data?.segments)) analysis = data;
+    } catch {
+      // Some tracks/accounts have no analysis: report no signal, never invent beats.
+    }
+  }
+
+  function atPosition(entries, seconds) {
+    let low = 0;
+    let high = entries.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (entries[middle].start <= seconds) low = middle + 1;
+      else high = middle;
+    }
+    return entries[low - 1];
+  }
+
+  function sendMusic() {
+    if (!musicWatching || socket?.readyState !== WebSocket.OPEN) return;
+    const track = readTrack();
+    if (!track) {
+      send({ type: "music", frame: null });
+      return;
+    }
+    if (analysisUri !== track.uri) void loadAnalysis(track.uri);
+    const seconds = Spicetify.Player.getProgress() / 1000;
+    const beat = analysis && atPosition(analysis.beats, seconds);
+    const segment = analysis && atPosition(analysis.segments, seconds);
+    const loudness = segment?.loudness_max;
+    if (!beat || !Number.isFinite(beat.start) || !Number.isFinite(loudness)) {
+      send({ type: "music", frame: null });
+      return;
+    }
+    send({ type: "music", frame: {
+      uri: track.uri,
+      beatStartMs: Math.max(0, Math.round(beat.start * 1000)),
+      intensity: Math.min(1, Math.max(0, Math.pow(10, loudness / 20))),
+    } });
+  }
+
   function currentItem() {
     return Spicetify.Player.data?.item ?? Spicetify.Player.data?.track;
   }
@@ -59,9 +114,9 @@
   }
 
   /** The playing track, or null: paused, an episode, an ad or a local file are not shared. */
-  function readTrack() {
+  function readTrack(includePaused = false) {
     const item = currentItem();
-    if (!item || !TRACK_URI.test(item.uri ?? "") || !Spicetify.Player.isPlaying()) return null;
+    if (!item || !TRACK_URI.test(item.uri ?? "") || (!includePaused && !Spicetify.Player.isPlaying())) return null;
     const artists = item.artists?.map((artist) => artist.name).join(", ") || item.metadata?.artist_name || "";
     return {
       uri: item.uri,
@@ -124,6 +179,20 @@
       positionAt: Date.now(),
       context: track ? readContext(currentItem()) : null,
     });
+    sendPlayback();
+  }
+
+  function sendPlayback() {
+    if (!playbackWatching || socket?.readyState !== WebSocket.OPEN) return;
+    send({ type: "playback-state", state: {
+      track: readTrack(true),
+      playing: Spicetify.Player.isPlaying(),
+      positionMs: Math.max(0, Math.round(Spicetify.Player.getProgress())),
+      durationMs: Math.max(0, Math.round(Spicetify.Player.getDuration?.() ?? 0)),
+      volume: Math.min(1, Math.max(0, Spicetify.Player.getVolume?.() ?? 1)),
+      shuffle: Spicetify.Player.getShuffle?.() === true,
+      repeat: Spicetify.Player.getRepeat?.() ?? 0,
+    } });
   }
 
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -298,6 +367,29 @@
     }
   }
 
+  async function controlPlayback({ command, value }) {
+    try {
+      if (command === "play") await Spicetify.Player.play();
+      else if (command === "pause") await Spicetify.Player.pause();
+      else if (command === "next") await Spicetify.Player.next();
+      else if (command === "previous") await Spicetify.Player.back();
+      else if (command === "mute") await Spicetify.Player.toggleMute();
+      else if (command === "shuffle") await Spicetify.Player.setShuffle(!Spicetify.Player.getShuffle());
+      else if (command === "repeat") await Spicetify.Player.setRepeat((Spicetify.Player.getRepeat() + 1) % 3);
+      else if (command === "volume" && Number.isFinite(value) && value >= 0 && value <= 1) await Spicetify.Player.setVolume(value);
+      else if (command === "seek" && Number.isInteger(value) && value >= 0 && Spicetify.Player.getDuration() > 0) {
+        // Spicetify interprets values <= 1 as a fraction, so use a fraction for every seek, including 0 ms.
+        await Spicetify.Player.seek(Math.min(value / Spicetify.Player.getDuration(), 1));
+      }
+      else return;
+      refreshPlayback();
+    } catch (error) {
+      console.error("[workadventure] could not control playback", error);
+      Spicetify.showNotification("Commande Spotify indisponible", true, 3000);
+      sendState();
+    }
+  }
+
   function setHomeJam(hostName) {
     homeJamHost = typeof hostName === "string" ? hostName : null;
     if (queueMenuItem && homeJamHost !== null) queueMenuItem.name = `Ajouter au Jukebox de ${homeJamHost || "l'hôte"}`;
@@ -329,7 +421,19 @@
     } catch {
       return;
     }
-    if (message?.type === "follow") void follow(message);
+    if (message?.type === "music-watch") {
+      musicWatching = message.watching === true;
+      analysisGeneration++;
+      analysisUri = undefined;
+      analysis = undefined;
+      sendMusic();
+    }
+    else if (message?.type === "playback-watch") {
+      playbackWatching = message.watching === true;
+      sendPlayback();
+    }
+    else if (message?.type === "playback") void controlPlayback(message);
+    else if (message?.type === "follow") void follow(message);
     else if (message?.type === "home-jam") setHomeJam(message.hostName);
     else if (message?.type === "enqueue") void enqueue(message);
     else if (message?.type === "dequeue") void dequeue(message);
@@ -355,6 +459,11 @@
     socket.addEventListener("message", onMessage);
     // The desktop app is not always running: try again quietly. Without it, there is no Jukebox either.
     socket.addEventListener("close", () => {
+      musicWatching = false;
+      playbackWatching = false;
+      analysisGeneration++;
+      analysisUri = undefined;
+      analysis = undefined;
       setHomeJam(null);
       setTimeout(connect, RECONNECT_MS);
     });
@@ -367,6 +476,8 @@
     sendQueue();
     void forwardLocalQueue();
   }, QUEUE_POLL_MS);
+  setInterval(sendMusic, MUSIC_INTERVAL_MS);
+  setInterval(sendPlayback, 1000);
   registerQueueMenu();
   connect();
 })();

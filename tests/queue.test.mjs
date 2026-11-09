@@ -185,7 +185,14 @@ test("music follows Spotify analysis, seeks and pauses, only while requested", a
   let calls = 0;
   const h = extensionHarness([], data, undefined, async () => {
     calls++;
-    return { beats: [{ start: 0 }, { start: 0.5 }, { start: 1 }], segments: [{ start: 0, loudness_max: -6 }, { start: 1, loudness_max: -20 }] };
+    return {
+      beats: [{ start: 0 }, { start: 0.5 }, { start: 1 }],
+      bars: [{ start: 0 }, { start: 1 }],
+      segments: [
+        { start: 0, loudness_start: -26, loudness_max: -6, timbre: [0, -60] },
+        { start: 1, loudness_max: -20, timbre: [0, 120] },
+      ],
+    };
   });
   h.intervals[2]();
   assert.equal(calls, 0);
@@ -195,11 +202,18 @@ test("music follows Spotify analysis, seeks and pauses, only while requested", a
   let frame = h.sent.at(-1).frame;
   assert.equal(frame.uri, "spotify:track:first");
   assert.equal(frame.beatStartMs, 500);
-  assert.ok(Math.abs(frame.intensity - Math.pow(10, -6 / 20)) < 0.0001);
+  // Loudness over the last 40 dB; a 20 dB rise is a strong (bass) attack; a dull timbre is bass, not treble.
+  assert.equal(frame.intensity, 0.85);
+  assert.equal(frame.attack, 0.8);
+  assert.equal(frame.brightness, 0);
+  assert.equal(frame.barStartMs, 0);
   data.positionMs = 1200;
   h.intervals[2]();
   assert.equal(h.sent.at(-1).frame.beatStartMs, 1000);
-  assert.equal(h.sent.at(-1).frame.intensity, 0.1);
+  assert.equal(h.sent.at(-1).frame.intensity, 0.5);
+  assert.equal(h.sent.at(-1).frame.attack, 0);
+  assert.equal(h.sent.at(-1).frame.brightness, 1);
+  assert.equal(h.sent.at(-1).frame.barStartMs, 1000);
   data.positionMs = 0;
   h.intervals[2]();
   assert.equal(h.sent.at(-1).frame.beatStartMs, 0);

@@ -1,4 +1,4 @@
-// WorkAdventure Spicetify v1.4.2
+// WorkAdventure Spicetify v1.4.3
 // WorkAdventure for Spicetify: lets the WorkAdventure desktop app read what this Spotify plays (track, position and
 // the playlist or album it plays from) and play along with another user ("Écouter en même temps"), Spotify Free
 // included. It only talks to the desktop app, on this computer (127.0.0.1); nothing else leaves Spotify.
@@ -96,12 +96,26 @@
       send({ type: "music", frame: null });
       return;
     }
+    const bar = atPosition(analysis.bars ?? [], seconds);
+    const unit = (value) => Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
     send({ type: "music", frame: {
       uri: track.uri,
       beatStartMs: Math.max(0, Math.round(beat.start * 1000)),
-      intensity: Math.min(1, Math.max(0, Math.pow(10, loudness / 20))),
+      // Loudness over the last 40 dB: the quiet parts of a track still move, the loud ones fill the room.
+      intensity: unit((loudness + 40) / 40),
+      // A kick or a bass note is a sharp rise of loudness at the start of a segment: what the lights hit on.
+      attack: unit((loudness - (segment.loudness_start ?? loudness)) / 25),
+      // Spotify's second timbre value tells dull (bass) from bright (hi-hats, cymbals) sounds.
+      brightness: unit(((segment.timbre?.[1] ?? 0) + 60) / 180),
+      ...(bar && Number.isFinite(bar.start) && { barStartMs: Math.max(0, Math.round(bar.start * 1000)) }),
     } });
   }
+
+  /** The desktop app refuses longer texts: a long album or a list of artists must not drop the whole state. */
+  const MAX_TEXT = 200;
+  const text = (value) => (typeof value === "string" ? value.slice(0, MAX_TEXT) : "");
+  /** Spotify's state can be momentarily incomplete (a track loading): never send NaN, it would reject the state. */
+  const milliseconds = (value) => (Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0);
 
   function currentItem() {
     return Spicetify.Player.data?.item ?? Spicetify.Player.data?.track;
@@ -120,9 +134,9 @@
     const artists = item.artists?.map((artist) => artist.name).join(", ") || item.metadata?.artist_name || "";
     return {
       uri: item.uri,
-      title: item.name ?? item.metadata?.title ?? "",
-      artist: artists,
-      album: item.album?.name ?? item.metadata?.album_title ?? "",
+      title: text(item.name || item.metadata?.title) || "Spotify",
+      artist: text(artists),
+      album: text(item.album?.name ?? item.metadata?.album_title),
       artworkUrl: artworkUrl(item),
     };
   }
@@ -175,7 +189,7 @@
     send({
       type: "state",
       track,
-      positionMs: track ? Math.max(0, Math.round(Spicetify.Player.getProgress())) : 0,
+      positionMs: track ? milliseconds(Spicetify.Player.getProgress()) : 0,
       positionAt: Date.now(),
       context: track ? readContext(currentItem()) : null,
     });
@@ -184,14 +198,16 @@
 
   function sendPlayback() {
     if (!playbackWatching || socket?.readyState !== WebSocket.OPEN) return;
+    const volume = Spicetify.Player.getVolume?.();
+    const repeat = Spicetify.Player.getRepeat?.();
     send({ type: "playback-state", state: {
       track: readTrack(true),
       playing: Spicetify.Player.isPlaying(),
-      positionMs: Math.max(0, Math.round(Spicetify.Player.getProgress())),
-      durationMs: Math.max(0, Math.round(Spicetify.Player.getDuration?.() ?? 0)),
-      volume: Math.min(1, Math.max(0, Spicetify.Player.getVolume?.() ?? 1)),
+      positionMs: milliseconds(Spicetify.Player.getProgress()),
+      durationMs: Math.min(86_400_000, milliseconds(Spicetify.Player.getDuration?.())),
+      volume: Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1,
       shuffle: Spicetify.Player.getShuffle?.() === true,
-      repeat: Spicetify.Player.getRepeat?.() ?? 0,
+      repeat: repeat === 1 || repeat === 2 ? repeat : 0,
     } });
   }
 
@@ -367,13 +383,41 @@
     }
   }
 
+  /** Volume before a mute from WorkAdventure, restored by the next one. */
+  let volumeBeforeMute = 1;
+  /** Spotify applies a command asynchronously: wait (briefly) until its state shows it, then report it. */
+  const PLAYBACK_CONFIRM_MS = 1500;
+
+  async function until(condition) {
+    const deadline = Date.now() + PLAYBACK_CONFIRM_MS;
+    while (!condition() && Date.now() < deadline) await wait(50);
+  }
+
+  async function setPlaying(playing) {
+    // Already there (the page showed a stale state): only report the actual state, never toggle back.
+    if (Spicetify.Player.isPlaying() === playing) return;
+    const api = Spicetify.Platform?.PlayerAPI;
+    if (playing) await (api?.resume ? api.resume() : Spicetify.Player.play());
+    else await (api?.pause ? api.pause() : Spicetify.Player.pause());
+    await until(() => Spicetify.Player.isPlaying() === playing);
+  }
+
+  async function toggleMute() {
+    const volume = Spicetify.Player.getVolume();
+    if (volume > 0) {
+      volumeBeforeMute = volume;
+      await Spicetify.Player.setVolume(0);
+    } else await Spicetify.Player.setVolume(volumeBeforeMute > 0 ? volumeBeforeMute : 0.5);
+  }
+
   async function controlPlayback({ command, value }) {
     try {
-      if (command === "play") await Spicetify.Player.play();
-      else if (command === "pause") await Spicetify.Player.pause();
+      if (command === "play") await setPlaying(true);
+      else if (command === "pause") await setPlaying(false);
       else if (command === "next") await Spicetify.Player.next();
       else if (command === "previous") await Spicetify.Player.back();
-      else if (command === "mute") await Spicetify.Player.toggleMute();
+      // Spicetify's toggleMute clicks a button of Spotify's UI, absent from some layouts: drive the volume instead.
+      else if (command === "mute") await toggleMute();
       else if (command === "shuffle") await Spicetify.Player.setShuffle(!Spicetify.Player.getShuffle());
       else if (command === "repeat") await Spicetify.Player.setRepeat((Spicetify.Player.getRepeat() + 1) % 3);
       else if (command === "volume" && Number.isFinite(value) && value >= 0 && value <= 1) await Spicetify.Player.setVolume(value);
@@ -382,7 +426,8 @@
         await Spicetify.Player.seek(Math.min(value / Spicetify.Player.getDuration(), 1));
       }
       else return;
-      refreshPlayback();
+      if (command === "next" || command === "previous") refreshPlayback();
+      else sendState();
     } catch (error) {
       console.error("[workadventure] could not control playback", error);
       Spicetify.showNotification("Commande Spotify indisponible", true, 3000);

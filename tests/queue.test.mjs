@@ -23,8 +23,7 @@ function extensionHarness(nextTracks, playerData, getMetadata, getAudioData) {
     addEventListener(name, callback) { if (name === "open") open = callback; if (name === "message") onMessage = callback; }
     send(message) { sent[sent.length] = JSON.parse(message); }
   }
-  runInNewContext(source, {
-    window: { Spicetify: {
+  const spicetify = {
       Player: { data: playerData, playUri() {},
         play() { controls[controls.length] = "play"; playerData.paused = false; },
         pause() { controls[controls.length] = "pause"; playerData.paused = true; },
@@ -44,7 +43,9 @@ function extensionHarness(nextTracks, playerData, getMetadata, getAudioData) {
       Platform: { PlaylistAPI: { getMetadata } },
       showNotification() {},
       Queue: { nextTracks },
-    } },
+  };
+  runInNewContext(source, {
+    window: { Spicetify: spicetify },
     WebSocket: Socket,
     setTimeout(callback) { timers[timers.length] = callback; },
     setInterval(callback) { intervals[intervals.length] = callback; },
@@ -55,7 +56,9 @@ function extensionHarness(nextTracks, playerData, getMetadata, getAudioData) {
   return { sent, timers, intervals, events, controls,
     command(command, value) { onMessage({ data: JSON.stringify({ type: "playback", command, value }) }); },
     watchPlayback(watching) { onMessage({ data: JSON.stringify({ type: "playback-watch", watching }) }); },
-    advance(ms) { time += ms; }, music(watching) { onMessage({ data: JSON.stringify({ type: "music-watch", watching }) }); }, refresh() { onMessage({ data: JSON.stringify({ type: "refresh-queue" }) }); } };
+    advance(ms) { time += ms; }, music(watching) { onMessage({ data: JSON.stringify({ type: "music-watch", watching }) }); },
+    analysis(watching) { onMessage({ data: JSON.stringify({ type: "analysis-watch", watching }) }); },
+    setCosmos(cosmos) { spicetify.CosmosAsync = cosmos; }, refresh() { onMessage({ data: JSON.stringify({ type: "refresh-queue" }) }); } };
 }
 
 test("controls the local Spotify player and reports pauses and resumes, rejecting unknown commands", async () => {
@@ -241,3 +244,61 @@ test("unavailable analysis and a late response from the previous track never inv
   h.intervals[2]();
   assert.equal(h.sent.at(-1).frame, null);
 });
+
+test("sends the analysis of the current track once, only while the karaoke watches, cut down to notes", async () => {
+  const data = { item: { uri: "spotify:track:first", metadata: { title: "First" } }, paused: true };
+  const asked = [];
+  const getAudioData = async (uri) => {
+    asked[asked.length] = uri;
+    return { segments: [
+      { start: 8.60889, duration: 0.1737, loudness_max: -17.98, pitches: [0.69, 0.41, 0.2, 0.05, 0.31, 0.06, 0.26, 1, 0.23, 0.05, 0.25, 0.23] },
+      { start: 9, duration: 0.2, loudness_max: -18, pitches: [1, 2] },
+    ] };
+  };
+  const h = extensionHarness([], data, undefined, getAudioData);
+  const analyses = () => h.sent.filter(({ type }) => type === "analysis");
+  await new Promise(setImmediate);
+  assert.equal(analyses().length, 0);
+  h.analysis(true);
+  await new Promise(setImmediate);
+  assert.deepEqual(analyses(), [{ type: "analysis", analysis: { uri: "spotify:track:first",
+    segments: [[8609, 174, -18, "642031292022"]] } }]);
+  for (const interval of h.intervals) interval();
+  h.events.songchange?.();
+  await new Promise(setImmediate);
+  assert.equal(analyses().length, 1);
+  assert.deepEqual(asked, ["spotify:track:first"]);
+  data.item = { uri: "spotify:track:second", metadata: { title: "Second" } };
+  h.events.songchange?.();
+  await new Promise(setImmediate);
+  assert.equal(analyses().at(-1).analysis.uri, "spotify:track:second");
+  h.analysis(false);
+  data.item = { uri: "spotify:track:third", metadata: { title: "Third" } };
+  h.events.songchange?.();
+  await new Promise(setImmediate);
+  assert.equal(analyses().length, 2);
+});
+
+test("joins Spotify's synced lyrics to the analysis, skipping unsynced ones", async () => {
+  const data = { item: { uri: "spotify:track:abc", metadata: { title: "Song" } }, paused: true };
+  const getAudioData = async () => ({ segments: [{ start: 1, duration: 0.2, loudness_max: -10, pitches: Array(12).fill(1) }] });
+  const responses = {
+    abc: { lyrics: { syncType: "LINE_SYNCED", lines: [
+      { startTimeMs: "33470", words: "أنت نور الله فجرا" }, { startTimeMs: "40000", words: "♪" }, { startTimeMs: "x", words: "bad" },
+    ] } },
+    def: { lyrics: { syncType: "UNSYNCED", lines: [{ startTimeMs: "0", words: "Plain" }] } },
+  };
+  const h = extensionHarness([], data, undefined, getAudioData);
+  const cosmos = { get: async (url) => responses[url.split("/track/")[1].split("?")[0]] };
+  h.setCosmos(cosmos);
+  h.analysis(true);
+  await new Promise(setImmediate);
+  const analyses = () => h.sent.filter(({ type }) => type === "analysis");
+  assert.deepEqual(analyses().at(-1).analysis.lyrics, [[33470, "أنت نور الله فجرا"], [40000, ""]]);
+  data.item = { uri: "spotify:track:def", metadata: { title: "Plain" } };
+  h.events.songchange?.();
+  await new Promise(setImmediate);
+  assert.equal(analyses().at(-1).analysis.lyrics, undefined);
+  assert.equal(analyses().at(-1).analysis.uri, "spotify:track:def");
+});
+

@@ -80,6 +80,75 @@
     return entries[low - 1];
   }
 
+  /**
+   * The karaoke's melody: once per track, Spotify's analysis cut down to what it needs (start, duration, loudness and
+   * the 12 notes of each segment, 0 to 9). Paused tracks too: the host prepares the stage before pressing play.
+   */
+  let analysisWatching = false;
+  let analysisSentUri;
+  let analysisSendGeneration = 0;
+  const MAX_ANALYSIS_SEGMENTS = 20000;
+  const MAX_LYRIC_LINES = 1000;
+  const MAX_LYRIC_TEXT = 300;
+
+  /** The synced lyrics Spotify shows for a track (line by line), none when it only has them unsynced or not at all. */
+  async function readLyrics(uri) {
+    try {
+      const id = uri.split(":")[2];
+      const response = await Spicetify.CosmosAsync?.get(
+        `https://spclient.wg.spotify.com/color-lyrics/v2/track/${id}?format=json&vocalRemoval=false&market=from_token`);
+      const lyrics = response?.lyrics;
+      if (!lyrics || !["LINE_SYNCED", "SYLLABLE_SYNCED"].includes(lyrics.syncType) || !Array.isArray(lyrics.lines)) return [];
+      return lyrics.lines
+        .map((line) => [Number(line?.startTimeMs), typeof line?.words === "string" ? line.words.trim() : ""])
+        .filter(([startMs]) => Number.isFinite(startMs) && startMs >= 0 && startMs <= 86400000)
+        .map(([startMs, words]) => [Math.round(startMs), words === "♪" ? "" : words.slice(0, MAX_LYRIC_TEXT)])
+        .slice(0, MAX_LYRIC_LINES);
+    } catch {
+      return [];
+    }
+  }
+
+  async function sendAnalysis() {
+    if (!analysisWatching || socket?.readyState !== WebSocket.OPEN) return;
+    const uri = currentItem()?.uri;
+    const track = typeof uri === "string" && /^spotify:track:[A-Za-z0-9]+$/.test(uri) ? uri : null;
+    if (track === analysisSentUri) return;
+    analysisSentUri = track;
+    const generation = ++analysisSendGeneration;
+    if (!track) {
+      send({ type: "analysis", analysis: null });
+      return;
+    }
+    let segments = [];
+    const lyricsRequest = readLyrics(track);
+    try {
+      const data = await Spicetify.getAudioData?.(track);
+      if (generation !== analysisSendGeneration || !analysisWatching) return;
+      segments = (Array.isArray(data?.segments) ? data.segments : [])
+        .filter((segment) =>
+          Number.isFinite(segment?.start) && segment.start >= 0 && Number.isFinite(segment.duration) &&
+          segment.duration > 0 && Array.isArray(segment.pitches) && segment.pitches.length === 12 &&
+          segment.pitches.every(Number.isFinite))
+        .slice(0, MAX_ANALYSIS_SEGMENTS)
+        .map((segment) => [
+          Math.round(segment.start * 1000),
+          Math.min(60000, Math.max(1, Math.round(segment.duration * 1000))),
+          Math.min(10, Math.max(-100, Math.round(Number.isFinite(segment.loudness_max) ? segment.loudness_max : -100))),
+          segment.pitches.map((pitch) => Math.round(Math.min(1, Math.max(0, pitch)) * 9)).join(""),
+        ]);
+    } catch {
+      // No analysis for this track or account: the karaoke stays without melody, never an invented one.
+      if (generation !== analysisSendGeneration || !analysisWatching) return;
+    }
+    const lyrics = await lyricsRequest;
+    if (generation !== analysisSendGeneration || !analysisWatching) return;
+    send({
+      type: "analysis",
+      analysis: segments.length || lyrics.length ? { uri: track, segments, ...(lyrics.length && { lyrics }) } : null,
+    });
+  }
+
   function sendMusic() {
     if (!musicWatching || socket?.readyState !== WebSocket.OPEN) return;
     const track = readTrack();
@@ -473,6 +542,12 @@
       analysis = undefined;
       sendMusic();
     }
+    else if (message?.type === "analysis-watch") {
+      analysisWatching = message.watching === true;
+      analysisSentUri = undefined;
+      analysisSendGeneration++;
+      void sendAnalysis();
+    }
     else if (message?.type === "playback-watch") {
       playbackWatching = message.watching === true;
       sendPlayback();
@@ -505,6 +580,8 @@
     // The desktop app is not always running: try again quietly. Without it, there is no Jukebox either.
     socket.addEventListener("close", () => {
       musicWatching = false;
+      analysisWatching = false;
+      analysisSendGeneration++;
       playbackWatching = false;
       analysisGeneration++;
       analysisUri = undefined;
@@ -514,7 +591,10 @@
     });
   }
 
-  Spicetify.Player.addEventListener("songchange", refreshPlayback);
+  Spicetify.Player.addEventListener("songchange", () => {
+    refreshPlayback();
+    void sendAnalysis();
+  });
   Spicetify.Player.addEventListener("onplaypause", sendState);
   setInterval(sendState, STATE_INTERVAL_MS);
   setInterval(() => {
@@ -523,6 +603,7 @@
   }, QUEUE_POLL_MS);
   setInterval(sendMusic, MUSIC_INTERVAL_MS);
   setInterval(sendPlayback, 1000);
+  setInterval(() => void sendAnalysis(), STATE_INTERVAL_MS);
   registerQueueMenu();
   connect();
 })();

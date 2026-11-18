@@ -1,6 +1,6 @@
 {
   "name": "workadventure-spicetify",
-  "version": "1.4.3",
+  "version": "1.5.0",
   "private": true,
   "scripts": {
     "check": "node --check workadventure.js && node --test tests/queue.test.mjs"
